@@ -1,3 +1,5 @@
+This is an attempt to bring RTXGI to 5.7. The plugin runs, but there is still a problem with the old shaders—most likely, they need to be rewritten to match SM6 raytracing bind tables.
+
 # RTXGI Unreal Engine Plugin
 
 To bring the advantages of RTXGI to as many developers as possible, all RTXGI 1.1 features are now available in Unreal Engine through the RTXGI UE plugin.
