@@ -58,6 +58,7 @@ public class RTXGI : ModuleRules
 		{
 			EngineDirectory + "/Source/Runtime/Renderer/Private",
 			EngineDirectory + "/Source/Runtime/RenderCore/Public",
+            EngineDirectory + "/Source/Runtime/Renderer/Internal"
 		});
 
 		PublicIncludePaths.AddRange(new string[]
