@@ -1,4 +1,4 @@
-This is an attempt to bring RTXGI to 5.7. The plugin runs, but there is still a problem with the old shaders—most likely, they need to be rewritten to match SM6 raytracing bind tables.
+This is an unofficial effort to bring the RTX plugin to 5.7 and there might be issues.
 
 # RTXGI Unreal Engine Plugin
 
