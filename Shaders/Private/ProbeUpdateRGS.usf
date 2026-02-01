@@ -242,13 +242,13 @@ RAY_TRACING_ENTRY_RAYGEN(ProbeUpdateRGS)
     }
 
     // Hit a surface backface. Set the radiance to black and exit early.
-    /*if (!Payload.IsFrontFace() && !Payload.IsTwoSided())
+    if (!Payload.IsFrontFace() && !Payload.IsTwoSided())
     {
         // Shorten the hit distance on a backface hit by 80%
         // Make distance negative to encode backface for the probe position preprocess.
         WriteRadianceOutput(DispatchIndex.xy, float4(0.0f, 0.0f, 0.0f, -Payload.HitT * 0.2f));
         return;
-    }*/
+    }
 
 #if RTXGI_DDGI_PROBE_CLASSIFICATION
     // hit a frontface, but probe is inactive, so this ray will only be used for reclassification, don't need any lighting
