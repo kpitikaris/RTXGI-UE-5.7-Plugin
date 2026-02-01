@@ -89,7 +89,8 @@ RAY_TRACING_ENTRY_RAYGEN(ProbeViewRGS)
     float radianceMultiplier = DDGIVolume_ShouldUsePreExposure ? DDGIVolume_PreExposure : 1.0f;
 
     FRayDesc Ray;
-    Ray.Origin = CameraPos;
+    float3 cameraTranslatedWorldPos = DFFastToTranslatedWorld(CameraPos, PrimaryView.PreViewTranslation);
+    Ray.Origin = cameraTranslatedWorldPos;
     float3 rayTarget = float3(float2(DispatchIndex.xy) / float2(DispatchRaysDimensions().xy) * 2.0f - 1.0f, 1.0f);
     rayTarget.y *= -1.0f;
     float3 rayDir = mul(float4(normalize(rayTarget), 0.0f), CameraMatrix).xyz;
@@ -156,7 +157,7 @@ RAY_TRACING_ENTRY_RAYGEN(ProbeViewRGS)
     }
 
     // Hit a surface backface. Set the radiance to black and exit early.
-    if (!Payload.IsFrontFace() && Payload.ShadingModelID != SHADINGMODELID_TWOSIDED_FOLIAGE)
+    if (!Payload.IsFrontFace() && !Payload.IsTwoSided())
     {
         // Shorten the hit distance on a backface hit by 20%
         // Make distance negative to encode backface for the probe position preprocess.
@@ -175,7 +176,7 @@ RAY_TRACING_ENTRY_RAYGEN(ProbeViewRGS)
     }
     else
     {
-        if (Payload.IsFrontFace() || Payload.ShadingModelID == SHADINGMODELID_TWOSIDED_FOLIAGE)
+        if (Payload.IsFrontFace() || Payload.IsTwoSided())
             RadianceOutput[DispatchIndex.xy] = float4(0.0f, 1.0f, 0.0f, Payload.HitT);
         else
             RadianceOutput[DispatchIndex.xy] = float4(1.0f, 0.0f, 0.0f, Payload.HitT);

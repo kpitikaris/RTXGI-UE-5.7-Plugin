@@ -168,11 +168,13 @@ RAY_TRACING_ENTRY_RAYGEN(ProbeUpdateRGS)
     float3 probeWorldPosition = DDGIGetProbeWorldPosition(probeIndex, DDGIVolume.origin, DDGIVolume.rotation, DDGIVolume.probeGridCounts, DDGIVolume.probeGridSpacing);
 #endif
 
+    float3 probeTranslatedWorldPosition = DFFastToTranslatedWorld(probeWorldPosition, PrimaryView.PreViewTranslation);
+
     float3 probeRayDirection = DDGIGetProbeRayDirection(rayIndex, DDGIVolume.numRaysPerProbe, DDGIVolume.probeRayRotationTransform);
 
     // Setup the probe ray
     FRayDesc Ray;
-    Ray.Origin = probeWorldPosition;
+    Ray.Origin = probeTranslatedWorldPosition;
     Ray.Direction = probeRayDirection;
     Ray.TMin = 0.f;
     Ray.TMax = DDGIVolume.probeMaxRayDistance;
@@ -240,13 +242,13 @@ RAY_TRACING_ENTRY_RAYGEN(ProbeUpdateRGS)
     }
 
     // Hit a surface backface. Set the radiance to black and exit early.
-    if (!Payload.IsFrontFace() && Payload.ShadingModelID != SHADINGMODELID_TWOSIDED_FOLIAGE)
+    /*if (!Payload.IsFrontFace() && !Payload.IsTwoSided())
     {
         // Shorten the hit distance on a backface hit by 80%
         // Make distance negative to encode backface for the probe position preprocess.
         WriteRadianceOutput(DispatchIndex.xy, float4(0.0f, 0.0f, 0.0f, -Payload.HitT * 0.2f));
         return;
-    }
+    }*/
 
 #if RTXGI_DDGI_PROBE_CLASSIFICATION
     // hit a frontface, but probe is inactive, so this ray will only be used for reclassification, don't need any lighting
@@ -291,7 +293,8 @@ RAY_TRACING_ENTRY_RAYGEN(ProbeUpdateRGS)
         DDGIVolume_0.probeScrollOffsets = DDGIVolume.probeScrollOffsets;
 
         // Get irradiance from the DDGIVolume
-        float3 surfacePosWS = Ray.Origin + Ray.Direction * Payload.HitT;
+        float3 surfacePosTranslated = Ray.Origin + Ray.Direction * Payload.HitT;
+        float3 surfacePosWS = DFFastSubtractDemote(surfacePosTranslated, PrimaryView.PreViewTranslation);
         float3 surfaceBias = DDGIGetSurfaceBias(Payload.WorldNormal, Ray.Direction, DDGIVolume_0);
         float3 irradiance = DDGIGetVolumeIrradiance(
             surfacePosWS,

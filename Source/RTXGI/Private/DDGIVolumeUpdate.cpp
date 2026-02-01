@@ -221,6 +221,11 @@ class FRayTracingRTXGIProbeUpdateRGS : public FGlobalShader
 		return ERayTracingPayloadType::RayTracingMaterial;
 	}
 	
+	static const FShaderBindingLayout* GetShaderBindingLayout(const FShaderPermutationParameters& Parameters)
+	{
+		return RayTracing::GetShaderBindingLayout(Parameters.Platform);
+	}
+	
 
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 	SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
@@ -244,6 +249,8 @@ class FRayTracingRTXGIProbeUpdateRGS : public FGlobalShader
 	SHADER_PARAMETER_SAMPLER(SamplerState, Sky_TextureSampler)
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRayTracingLightGrid, RayTracingLightGridUniformBuffer)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FNaniteRayTracingUniformParameters, NaniteRayTracing)
 	END_SHADER_PARAMETER_STRUCT()
 };
 
@@ -285,6 +292,11 @@ class FRayTracingRTXGIProbeViewRGS : public FGlobalShader
 		return ERayTracingPayloadType::RayTracingMaterial;
 	}
 	
+	static const FShaderBindingLayout* GetShaderBindingLayout(const FShaderPermutationParameters& Parameters)
+	{
+		return RayTracing::GetShaderBindingLayout(Parameters.Platform);
+	}
+	
 	BEGIN_SHADER_PARAMETER_STRUCT(FParameters, )
 	SHADER_PARAMETER_RDG_BUFFER_SRV(RaytracingAccelerationStructure, TLAS)
 
@@ -302,6 +314,8 @@ class FRayTracingRTXGIProbeViewRGS : public FGlobalShader
 	SHADER_PARAMETER_SAMPLER(SamplerState, Sky_TextureSampler)
 
 	SHADER_PARAMETER_RDG_TEXTURE_UAV(RWTexture2D<float4>, RadianceOutput)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FSceneUniformParameters, Scene)
+	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FNaniteRayTracingUniformParameters, NaniteRayTracing)
 
 	SHADER_PARAMETER_STRUCT_REF(FViewUniformShaderParameters, ViewUniformBuffer)
 	SHADER_PARAMETER_RDG_UNIFORM_BUFFER(FRayTracingLightGrid, RayTracingLightGridUniformBuffer) // ADD THIS LINE
@@ -1152,6 +1166,8 @@ void DebugShaderPlatformsDetailed()
     FRayTracingRTXGIProbeViewRGS::FParameters DefaultPassParameters;
     FRayTracingRTXGIProbeViewRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRayTracingRTXGIProbeViewRGS::FParameters>();
     *PassParameters = DefaultPassParameters;
+	PassParameters->Scene = GetSceneUniformBufferRef(GraphBuilder, View);
+	PassParameters->NaniteRayTracing = Nanite::GetPublicGlobalRayTracingUniformBuffer();
     PassParameters->RayTracingLightGridUniformBuffer = View.RayTracingLightGridUniformBuffer;
     PassParameters->DDGIVolume_PreExposure = View.PreExposure;
     PassParameters->DDGIVolume_ShouldUsePreExposure = View.Family->EngineShowFlags.Tonemapper;
@@ -1186,71 +1202,34 @@ void DebugShaderPlatformsDetailed()
     PassParameters->RayTracingLightGridUniformBuffer = View.RayTracingLightGridUniformBuffer;
     FIntPoint DispatchSize(c_probeVisWidth, c_probeVisHeight);
 
-    // Get reference to the SBT - don't create a local copy
-    const FRayTracingShaderBindingTable& RayTracingSBT = Scene.RayTracingSBT;
-
     GraphBuilder.AddPass(
         RDG_EVENT_NAME("DDGI RTRadiance %dx%d", DispatchSize.X, DispatchSize.Y),
         PassParameters,
         ERDGPassFlags::Compute,
-        [PassParameters, RayTracingSceneRHI = View.GetRayTracingSceneChecked(ERayTracingSceneLayer::Base), &View, RayGenerationShader,
-            DispatchSize, &RayTracingSBT] // Capture by reference
+        [PassParameters, &View, RayGenerationShader,
+            DispatchSize]
         (FRHICommandListImmediate& RHICmdList)
         {
-            // Check if we have a valid material pipeline
-            if (View.MaterialRayTracingData.PipelineState)
+            if(View.MaterialRayTracingData.PipelineState)
             {
-                FRayTracingPipelineStateInitializer Initializer;
+				// Set ray gen shader
+            	FRHIRayTracingShader* RayGenShaderRHI = RayGenerationShader.GetRayTracingShader();
+            	FRHIBatchedShaderParameters& GlobalResources = RHICmdList.GetScratchShaderParameters();
+				SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
+            
 
-				// Get the binding layout from the compiled shader instance
-     //        	const FShaderBindingLayout* ShaderBindingLayout = RayTracing::GetShaderBindingLayout(GMaxRHIShaderPlatform);
-					// if (ShaderBindingLayout)
-					// {
-					// 	Initializer.ShaderBindingLayout = &ShaderBindingLayout->RHILayout;
-					// }
+				FRHIUniformBuffer* SceneUniformBuffer = PassParameters->Scene->GetRHI();
+				FRHIUniformBuffer* NaniteRayTracingUniformBuffer = PassParameters->NaniteRayTracing->GetRHI();
+				TOptional<FScopedUniformBufferStaticBindings> StaticUniformBufferScope = RayTracing::BindStaticUniformBufferBindings(View, SceneUniformBuffer, NaniteRayTracingUniformBuffer, RHICmdList);
 
-                Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::RayTracingMaterial);
-
-                // Set ray gen shader
-                FRHIRayTracingShader* RayGenShaderRHI = RayGenerationShader.GetRayTracingShader();
-            	if (!RayGenShaderRHI)
-            	{
-					UE_LOG(LogTemp, Error, TEXT("Ray gen shader RHI is null!"));
-					return;
-				}
-                FRHIRayTracingShader* RayGenShaderTable[] = {RayGenShaderRHI};
-                Initializer.SetRayGenShaderTable(RayGenShaderTable);
-
-                FRHIRayTracingShader* HitGroupTable[] = {GetRayTracingDefaultOpaqueShader(View.ShaderMap)};
-                Initializer.SetHitGroupTable(HitGroupTable);
-
-                FRHIRayTracingShader* MissGroupTable[] = {GetRayTracingDefaultMissShader(View.ShaderMap)};
-                Initializer.SetMissShaderTable(MissGroupTable);
-
-                FRayTracingPipelineState* Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, Initializer);
-
-                if (Pipeline)
-                {
-                    FRHIBatchedShaderParameters& GlobalResources = RHICmdList.GetScratchShaderParameters();
-                    SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
-
-                    // Create SBT like Lumen does - use FShaderBindingTableRHIRef directly
-                    FShaderBindingTableRHIRef SBT = RayTracingSBT.AllocateTransientRHI(RHICmdList, ERayTracingShaderBindingMode::RTPSO,
-                        ERayTracingHitGroupIndexingMode::Disallow, Initializer.GetMaxLocalBindingDataSize());
-
-                    RHICmdList.SetDefaultRayTracingHitGroup(SBT, Pipeline, 0);
-                    RHICmdList.SetRayTracingMissShader(SBT, 0, Pipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
-                    RHICmdList.CommitShaderBindingTable(SBT);
-
-                    RHICmdList.RayTraceDispatch(
-                        Pipeline,
-                        RayGenShaderRHI,
-                        SBT,
-                        GlobalResources,
-                        DispatchSize.X,
-                        DispatchSize.Y
-                    );
-                }
+				RHICmdList.RayTraceDispatch(
+					View.MaterialRayTracingData.PipelineState,
+					RayGenShaderRHI,
+					View.MaterialRayTracingData.ShaderBindingTable,
+					GlobalResources,
+					DispatchSize.X,
+					DispatchSize.Y
+				);
             }
         }
     );
@@ -1298,6 +1277,9 @@ void DebugShaderPlatformsDetailed()
 		FRayTracingRTXGIProbeUpdateRGS::FParameters* PassParameters = GraphBuilder.AllocParameters<FRayTracingRTXGIProbeUpdateRGS::FParameters>();
 		*PassParameters = DefaultPassParameters;
 
+		PassParameters->Scene = GetSceneUniformBufferRef(GraphBuilder, View);
+		PassParameters->NaniteRayTracing = Nanite::GetPublicGlobalRayTracingUniformBuffer();
+		
 		PassParameters->TLAS = Scene.RayTracingScene.GetLayerView(ERayTracingSceneLayer::Base, View.GetRayTracingSceneViewHandle());
 		PassParameters->RadianceOutput = ProbesRadianceUAV;
 		PassParameters->FrameRandomSeed = GFrameNumber;
@@ -1373,7 +1355,6 @@ void DebugShaderPlatformsDetailed()
 
 		PassParameters->ViewUniformBuffer = View.ViewUniformBuffer;
 		PassParameters->RayTracingLightGridUniformBuffer = View.RayTracingLightGridUniformBuffer;
-		const FRayTracingShaderBindingTable& RayTracingSBT = Scene.RayTracingSBT;
 		FIntPoint DispatchSize = ProbesRadianceTex->Desc.Extent;
 
 		GraphBuilder.AddPass(
@@ -1384,65 +1365,36 @@ void DebugShaderPlatformsDetailed()
 [PassParameters, RayTracingSceneRHI = View.RayTracingScene.RayTracingSceneRHI, &View, RayGenerationShader, DispatchSize, ProbesRadianceTex]
 (FRHICommandList& RHICmdList)
 #else
-[PassParameters, RayTracingSceneRHI = View.GetRayTracingSceneChecked(ERayTracingSceneLayer::Base), &View, RayGenerationShader, DispatchSize, &RayTracingSBT]
+[PassParameters, &View, RayGenerationShader, DispatchSize]
 (FRHICommandListImmediate& RHICmdList)
 #endif
 {
+		if(View.MaterialRayTracingData.PipelineState)
+        {
+            // Set ray gen shader
+            FRHIRayTracingShader* RayGenShaderRHI = RayGenerationShader.GetRayTracingShader();
+			if (!RayGenShaderRHI)
+			{
+				UE_LOG(LogTemp, Error, TEXT("Ray gen shader RHI is null!"));
+				return;
+			}
 
-		if (View.MaterialRayTracingData.PipelineState)
-            {
-                FRayTracingPipelineStateInitializer Initializer;
+			FRHIBatchedShaderParameters& GlobalResources = RHICmdList.GetScratchShaderParameters();
+			SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
+                	
+			FRHIUniformBuffer* SceneUniformBuffer = PassParameters->Scene->GetRHI();
+			FRHIUniformBuffer* NaniteRayTracingUniformBuffer = PassParameters->NaniteRayTracing->GetRHI();
+			TOptional<FScopedUniformBufferStaticBindings> StaticUniformBufferScope = RayTracing::BindStaticUniformBufferBindings(View, SceneUniformBuffer, NaniteRayTracingUniformBuffer, RHICmdList);
 
-                // Try to get from the View's material data instead
-				// const FShaderBindingLayout* ShaderBindingLayout = RayTracing::GetShaderBindingLayout(GMaxRHIShaderPlatform);
-				// if (ShaderBindingLayout)
-				// {
-				// 	Initializer.ShaderBindingLayout = &ShaderBindingLayout->RHILayout;
-				// }
-
-                Initializer.MaxPayloadSizeInBytes = GetRayTracingPayloadTypeMaxSize(ERayTracingPayloadType::RayTracingMaterial);
-
-                // Set ray gen shader
-                FRHIRayTracingShader* RayGenShaderRHI = RayGenerationShader.GetRayTracingShader();
-				if (!RayGenShaderRHI)
-				{
-					UE_LOG(LogTemp, Error, TEXT("Ray gen shader RHI is null!"));
-					return;
-				}
-                FRHIRayTracingShader* RayGenShaderTable[] = {RayGenShaderRHI};
-                Initializer.SetRayGenShaderTable(RayGenShaderTable);
-
-                FRHIRayTracingShader* HitGroupTable[] = {GetRayTracingDefaultOpaqueShader(View.ShaderMap)};
-                Initializer.SetHitGroupTable(HitGroupTable);
-
-                FRHIRayTracingShader* MissGroupTable[] = {GetRayTracingDefaultMissShader(View.ShaderMap)};
-                Initializer.SetMissShaderTable(MissGroupTable);
-
-                FRayTracingPipelineState* Pipeline = PipelineStateCache::GetAndOrCreateRayTracingPipelineState(RHICmdList, Initializer);
-
-                if (Pipeline)
-                {
-                    FRHIBatchedShaderParameters& GlobalResources = RHICmdList.GetScratchShaderParameters();
-                    SetShaderParameters(GlobalResources, RayGenerationShader, *PassParameters);
-
-                    // Create SBT like Lumen does - use FShaderBindingTableRHIRef directly
-                    FShaderBindingTableRHIRef SBT = RayTracingSBT.AllocateTransientRHI(RHICmdList, ERayTracingShaderBindingMode::RTPSO,
-                        ERayTracingHitGroupIndexingMode::Disallow, Initializer.GetMaxLocalBindingDataSize());
-
-                    RHICmdList.SetDefaultRayTracingHitGroup(SBT, Pipeline, 0);
-                    RHICmdList.SetRayTracingMissShader(SBT, 0, Pipeline, 0 /* ShaderIndexInPipeline */, 0, nullptr, 0);
-                    RHICmdList.CommitShaderBindingTable(SBT);
-
-                    RHICmdList.RayTraceDispatch(
-                        Pipeline,
-                        RayGenShaderRHI,
-                        SBT,
-                        GlobalResources,
-                        DispatchSize.X,
-                        DispatchSize.Y
-                    );
-                }
-            }
+			RHICmdList.RayTraceDispatch(
+				View.MaterialRayTracingData.PipelineState,
+				RayGenShaderRHI,
+				View.MaterialRayTracingData.ShaderBindingTable,
+				GlobalResources,
+				DispatchSize.X,
+				DispatchSize.Y
+			);
+        }
 }
 		);
 	}
@@ -1914,18 +1866,6 @@ FRDGBufferUAVRef FViewInfo::GetRayTracingInstanceHitCountUAV(FRDGBuilder& GraphB
 		}
 	}    
 	return nullptr;
-}
-
-const FViewInfo* FViewInfo::GetPrimaryView() const
-{
-	// It is valid for this function to return itself if it's already the primary view.
-	if (Family && Family->Views.IsValidIndex(PrimaryViewIndex))
-	{
-		const FSceneView* PrimaryView = Family->Views[PrimaryViewIndex];
-		check(PrimaryView->bIsViewInfo);
-		return static_cast<const FViewInfo*>(PrimaryView);
-	}
-	return this;
 }
 
 FRHIRayTracingShader* GetRayTracingDefaultMissShader(const FGlobalShaderMap* ShaderMap)
