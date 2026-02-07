@@ -1814,6 +1814,9 @@ void DebugShaderPlatformsDetailed()
 } // namespace DDGIVolumeUpdate
 
 #undef LOCTEXT_NAMESPACE
+
+#if !IS_MONOLITHIC
+
 bool FViewInfo::HasRayTracingScene() const
 {
 	check(Family);
@@ -1877,4 +1880,4 @@ FRHIRayTracingShader* GetRayTracingDefaultOpaqueShader(const FGlobalShaderMap* S
 {
 	return ShaderMap->GetShader<FOpaqueShadowHitGroup>().GetRayTracingShader();
 }
-
+#endif
