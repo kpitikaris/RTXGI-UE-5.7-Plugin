@@ -1352,12 +1352,10 @@ void UDDGIVolumeComponent::UpdateRenderThreadData()
 				FMemMark Mark(FMemStack::Get());
 				FRDGBuilder GraphBuilder(RHICmdList);
 		
-				// Compute changes BEFORE assigning ComponentData
-				bool probeCountsChanged = DDGIProxy->ComponentData.ProbeCounts != ComponentData.ProbeCounts;
-				bool raysPerProbeChanged = DDGIProxy->ComponentData.RaysPerProbe != ComponentData.RaysPerProbe;
-				bool relocationChanged = DDGIProxy->ComponentData.EnableProbeRelocation != ComponentData.EnableProbeRelocation;
-		
-				bool needReallocate = probeCountsChanged || raysPerProbeChanged || relocationChanged;
+				bool needReallocate =
+					DDGIProxy->ComponentData.ProbeCounts != ComponentData.ProbeCounts ||
+					DDGIProxy->ComponentData.RaysPerProbe != ComponentData.RaysPerProbe ||
+					DDGIProxy->ComponentData.EnableProbeRelocation != ComponentData.EnableProbeRelocation;
 		
 				// Now assign the new data
 				DDGIProxy->ComponentData = ComponentData;
@@ -1368,11 +1366,6 @@ void UDDGIVolumeComponent::UpdateRenderThreadData()
 		
 				if (needReallocate)
 				{
-					// Clear load context if reallocating due to probe count change (old data incompatible)
-					if (probeCountsChanged)
-					{
-						DDGIProxy->TextureLoadContext.Clear();
-					}
 					DDGIProxy->ReallocateSurfaces_RenderThread(RHICmdList, IrradianceBits, DistanceBits);
 					DDGIProxy->ResetTextures_RenderThread(GraphBuilder);
 					FDDGIVolumeSceneProxy::AllProxiesReadyForRender_RenderThread.Add(DDGIProxy);
@@ -1498,30 +1491,16 @@ void UDDGIVolumeComponent::DestroyRenderState_Concurrent()
 	{
 		FDDGITextureLoadContext& ComponentLoadContext = LoadContext;
 
-		bool bStatic = RuntimeStatic;
-#if WITH_EDITOR
-		if (bStatic)
-		{
-			auto CVarDDGIStaticInEditor = IConsoleManager::Get().FindConsoleVariable(TEXT("r.RTXGI.DDGI.StaticInEditor"));
-			bStatic = CVarDDGIStaticInEditor && CVarDDGIStaticInEditor->GetBool();
-		}
-#endif
-
 		FDDGIVolumeSceneProxy* DDGIProxy = SceneProxy;
 		ENQUEUE_RENDER_COMMAND(DeleteProxy)(
-			[DDGIProxy, &ComponentLoadContext, bStatic](FRHICommandListImmediate& RHICmdList)
+			[DDGIProxy, &ComponentLoadContext](FRHICommandListImmediate& RHICmdList)
 			{
 				// If the component has textures pending load, nothing to do here. Those are the most authoritative.
 				if (!ComponentLoadContext.ReadyForLoad)
 				{
-					// If static, just reset the ready for load state
-					if (bStatic)
-					{
-						ComponentLoadContext.ReadyForLoad = true;
-					}
 					// If the proxy has textures pending load which haven't been serviced yet, the component should take those
 					// in case it creates another proxy.
-					else if (DDGIProxy->TextureLoadContext.ReadyForLoad)
+					if (DDGIProxy->TextureLoadContext.ReadyForLoad)
 					{
 						ComponentLoadContext = DDGIProxy->TextureLoadContext;
 					}
