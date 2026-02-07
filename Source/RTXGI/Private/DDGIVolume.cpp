@@ -51,6 +51,11 @@ void ADDGIVolume::PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedE
 			return;
 		}
 	}
+
+	if (PropertyChangedEvent.GetPropertyName() == GET_MEMBER_NAME_CHECKED(UDDGIVolumeComponent, ProbeCounts))
+	{
+		DDGIVolumeComponent->ClearProbeData();
+	}
 	DDGIVolumeComponent->MarkRenderDynamicDataDirty();
 }
 
