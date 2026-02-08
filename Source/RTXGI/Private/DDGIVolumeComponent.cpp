@@ -67,9 +67,6 @@ static TAutoConsoleVariable<int> CVarStatVolume(
 	TEXT("The index for which volume's STAT is displayed\n"),
 	ECVF_RenderThreadSafe | ECVF_Cheat);
 
-static FCriticalSection GDDGIReadbackCS;
-static TMap<FDDGITexturePixels*, TUniquePtr<FRHIGPUTextureReadback>> GDDGIReadbacks;
-
 BEGIN_SHADER_PARAMETER_STRUCT(FVolumeData, )
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ProbeIrradiance)
 	SHADER_PARAMETER_RDG_TEXTURE(Texture2D, ProbeDistance)
@@ -970,71 +967,47 @@ FCustomVersionRegistration GRegisterCustomVersion(FDDGICustomVersion::GUID, FDDG
 // Create a CPU accessible GPU texture and copy the provided GPU texture's contents to it
 static FDDGITexturePixels GetTexturePixelsStep1_RenderThread(FRHICommandListImmediate& RHICmdList, FRHITexture* textureGPU)
 {
-	FDDGITexturePixels Result = FDDGITexturePixels{};
-	if (!textureGPU) return Result;
-	
-	const FRHITextureDesc SrcDesc = textureGPU->GetDesc();
-	
-	Result.Desc.Width = SrcDesc.Extent.X;
-	Result.Desc.Height = SrcDesc.Extent.Y;
-	Result.Desc.PixelFormat = static_cast<uint32>(SrcDesc.Format);
-	
-	TUniquePtr<FRHIGPUTextureReadback> Readback = MakeUnique<FRHIGPUTextureReadback>(TEXT("DDGIGetTexturePixelsSave"));
-	Readback->EnqueueCopy(
-		RHICmdList,
-		textureGPU,
-		FIntVector(0, 0, 0),
-		/*SourceSlice*/ 0,
-		FIntVector(static_cast<int32>(Result.Desc.Width), static_cast<int32>(Result.Desc.Height), 1)
-	);
-	
-	{
-		FScopeLock Lock(&GDDGIReadbackCS);
-		GDDGIReadbacks.Add(&Result, MoveTemp(Readback));
-	}
-	
-	return Result;
+	FDDGITexturePixels ret;
+
+	// Early out if a GPU texture is not provided
+	if (!textureGPU) return ret;
+
+	ret.Desc.Width = textureGPU->GetTexture2D()->GetSizeX();
+	ret.Desc.Height = textureGPU->GetTexture2D()->GetSizeY();
+	ret.Desc.PixelFormat = (int32)textureGPU->GetFormat();
+
+	// Create the texture
+	FRHITextureCreateDesc CreateInfo = FRHITextureCreateDesc::Create2D(TEXT("DDGIGetTexturePixelsSave"), ret.Desc.Width,ret.Desc.Height, textureGPU->GetFormat());
+	CreateInfo.AddFlags(TexCreate_ShaderResource);
+
+	CreateInfo.InitialState = ERHIAccess::CopyDest;
+	ret.Texture = RHICreateTexture(CreateInfo);
+
+	// Transition the GPU texture to a copy source
+	RHICmdList.Transition(FRHITransitionInfo(textureGPU, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+
+	// Schedule a copy of the GPU texture to the CPU accessible GPU texture
+	RHICmdList.CopyTexture(textureGPU, ret.Texture, FRHICopyTextureInfo{});
+
+	// Transition the GPU texture back to general
+	RHICmdList.Transition(FRHITransitionInfo(textureGPU, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+
+	return ret;
 }
 
 // Read the CPU accessible GPU texture data into CPU memory
 static void GetTexturePixelsStep2_RenderThread(FRHICommandListImmediate& RHICmdList, FDDGITexturePixels& texturePixels)
 {
-	TUniquePtr<FRHIGPUTextureReadback> Readback;
-	
-	{
-		FScopeLock Lock(&GDDGIReadbackCS);
-		if (TUniquePtr<FRHIGPUTextureReadback>* Found = GDDGIReadbacks.Find(&texturePixels))
-		{
-			Readback = MoveTemp(*Found);
-			GDDGIReadbacks.Remove(&texturePixels);
-		}
-	}
-	
-	if (!Readback) return;
-	
-	int32 RowPitchInPixels = 0;
-	int32 BufferHeight = 0;
-	void* Ptr = Readback->Lock(RowPitchInPixels, &BufferHeight);
-	if (!Ptr)
-	{
-		Readback->Unlock();
-		return;
-	}
-	
-	const EPixelFormat PF = (EPixelFormat)texturePixels.Desc.PixelFormat;
-	const int32 BytesPerPixel = GPixelFormats[PF].BlockBytes;
-	
-	const int32 RowPitchBytes = RowPitchInPixels * BytesPerPixel;
-	texturePixels.Desc.Stride = (uint32)RowPitchBytes;
-	
-	const uint32 CopyHeight = FMath::Min<uint32>(texturePixels.Desc.Height, (uint32)BufferHeight);
-	
-	texturePixels.Pixels.SetNumZeroed(CopyHeight * texturePixels.Desc.Stride);
-	FMemory::Memcpy(texturePixels.Pixels.GetData(), Ptr, CopyHeight * texturePixels.Desc.Stride);
-	
-	Readback->Unlock();
-	
-	texturePixels.Texture = nullptr;
+	if (!texturePixels.Texture) return;
+
+	// Get a pointer to the CPU memory
+	uint8* mappedTextureMemory = (uint8*)RHICmdList.LockTexture2D(texturePixels.Texture, 0, RLM_ReadOnly, texturePixels.Desc.Stride, false);
+
+	// Copy the texture data to CPU memory
+	texturePixels.Pixels.AddZeroed(texturePixels.Desc.Height * texturePixels.Desc.Stride);
+	FMemory::Memcpy(&texturePixels.Pixels[0], mappedTextureMemory, texturePixels.Desc.Height * texturePixels.Desc.Stride);
+
+	RHICmdList.UnlockTexture2D(texturePixels.Texture, 0, false);
 }
 
 static void SaveFDDGITexturePixels(FArchive& Ar, FDDGITexturePixels& texturePixels, bool bSaveFormat)
